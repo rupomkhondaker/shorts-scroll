@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Shorts Scroll",
+  "version": "1.0",
+  "description": "Auto scroll through videos on YouTube, Instagram, Facebook, and TikTok",
+  "permissions": ["storage", "activeTab"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*", "*://youtube.com/*"],
+      "js": ["content-scripts/youtube.js"]
+    },
+    {
+      "matches": ["*://*.instagram.com/*", "*://instagram.com/*"],
+      "js": ["content-scripts/instagram.js"]
+    },
+    {
+      "matches": ["*://*.facebook.com/*", "*://facebook.com/*"],
+      "js": ["content-scripts/facebook.js"]
+    },
+    {
+      "matches": ["*://*.tiktok.com/*", "*://tiktok.com/*"],
+      "js": ["content-scripts/tiktok.js"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
