@@ -3,6 +3,9 @@
   let autoScrollInterval = null;
   let videoEndDetectionInterval = null;
   let manualScrollTimeout = null;
+  let videoEndObserver = null;
+  let lastScrollTime = 0;
+  const SCROLL_COOLDOWN = 3000;
   const platform = 'youtube';
   let settings = {
     detectVideoEnd: true,
@@ -12,6 +15,12 @@
 
   // Function to scroll to the next video
   function scrollToNextVideo() {
+    const now = Date.now();
+    if (now - lastScrollTime < SCROLL_COOLDOWN) {
+      console.log('Scroll cooldown active, skipping');
+      return;
+    }
+    lastScrollTime = now;
     console.log('Scrolling to next YouTube video');
     
     // Check if we're on YouTube Shorts
@@ -59,29 +68,129 @@
     );
   }
 
+  // Helper to get the main video element reliably
+  function getMainVideoElement() {
+    return document.querySelector('#movie_player video') ||
+           document.querySelector('ytd-player video') ||
+           document.querySelector('ytd-shorts video') ||
+           document.querySelector('video');
+  }
+
+  let currentVideo = null;
+  let lastCurrentTime = 0;
+  let lastDuration = 0;
+
+  function onVideoEnded(event) {
+    console.log('YouTube native video ended event fired');
+    scrollToNextVideo();
+  }
+
+  function onTimeUpdate(event) {
+    const video = event.target;
+    const duration = video.duration;
+    const currentTime = video.currentTime;
+
+    // Detect near-end via timeupdate (fires much more often than polling)
+    if (currentTime > 0 && typeof duration === 'number' && !isNaN(duration) && duration > 0 && duration !== Infinity) {
+      if (currentTime >= duration - 1) {
+        console.log('YouTube video near end detected via timeupdate');
+        scrollToNextVideo();
+        return;
+      }
+    }
+
+    // Detect video replacement: was near end, now currentTime dropped significantly
+    if (lastCurrentTime > 0 && lastDuration > 0 &&
+        lastCurrentTime >= lastDuration - 2 &&
+        currentTime < lastCurrentTime - 2) {
+      console.log('YouTube video ended detected via currentTime reset');
+      scrollToNextVideo();
+      return;
+    }
+
+    lastCurrentTime = currentTime;
+    lastDuration = duration;
+  }
+
+  function onPause(event) {
+    const video = event.target;
+    const duration = video.duration;
+    const currentTime = video.currentTime;
+
+    // YouTube often pauses at the end instead of firing ended
+    if (currentTime > 0 && typeof duration === 'number' && !isNaN(duration) && duration > 0 && duration !== Infinity) {
+      if (currentTime >= duration - 2) {
+        console.log('YouTube video paused near end');
+        scrollToNextVideo();
+      }
+    }
+  }
+
+  function attachVideoEndListeners() {
+    const video = getMainVideoElement();
+    if (!video || video === currentVideo) return;
+
+    // Detach from previous video
+    if (currentVideo) {
+      currentVideo.removeEventListener('ended', onVideoEnded);
+      currentVideo.removeEventListener('timeupdate', onTimeUpdate);
+      currentVideo.removeEventListener('pause', onPause);
+    }
+
+    currentVideo = video;
+    lastCurrentTime = 0;
+    lastDuration = video.duration || 0;
+
+    video.addEventListener('ended', onVideoEnded);
+    video.addEventListener('timeupdate', onTimeUpdate);
+    video.addEventListener('pause', onPause);
+    console.log('YouTube video end listeners attached to new video element');
+  }
+
   // Function to detect when a YouTube video ends
   function setupVideoEndDetection() {
     if (videoEndDetectionInterval) {
       clearInterval(videoEndDetectionInterval);
+      videoEndDetectionInterval = null;
+    }
+    if (videoEndObserver) {
+      videoEndObserver.disconnect();
+      videoEndObserver = null;
     }
 
+    // Attach listeners to current video and watch for DOM changes
+    attachVideoEndListeners();
+    videoEndObserver = new MutationObserver(attachVideoEndListeners);
+    videoEndObserver.observe(document.body, { childList: true, subtree: true });
+
+    // Fast fallback polling to catch anything missed by events
     videoEndDetectionInterval = setInterval(() => {
-      // Only run detection if enabled in settings
       if (!settings.detectVideoEnd) return;
 
-      // Get the video element
-      const videoElement = document.querySelector('video');
-      if (videoElement) {
-        // Check if video has ended or is very close to ending (within 1 second)
-        if (videoElement.ended || (videoElement.currentTime > 0 && 
-            videoElement.duration > 0 && 
-            videoElement.currentTime >= videoElement.duration - 1)) {
-          
-          console.log('YouTube video end detected, scrolling to next video');
+      const video = getMainVideoElement();
+      if (!video) return;
+
+      // Re-attach if video element changed (backup in case MutationObserver misses it)
+      if (video !== currentVideo) {
+        attachVideoEndListeners();
+      }
+
+      const duration = video.duration;
+      const currentTime = video.currentTime;
+
+      if (video.ended) {
+        console.log('YouTube video ended (property, polled)');
+        scrollToNextVideo();
+        return;
+      }
+
+      if (currentTime > 0 && typeof duration === 'number' && !isNaN(duration) && duration > 0 && duration !== Infinity) {
+        if (currentTime >= duration - 0.5) {
+          console.log('YouTube video near end detected via fast polling');
           scrollToNextVideo();
         }
       }
-    }, 1000); // Check every second
+    }, 200);
   }
 
   // Function to set up manual scroll after X seconds
@@ -152,17 +261,33 @@
       clearInterval(autoScrollInterval);
       autoScrollInterval = null;
     }
-    
+
     if (videoEndDetectionInterval) {
       clearInterval(videoEndDetectionInterval);
       videoEndDetectionInterval = null;
     }
-    
+
     if (manualScrollTimeout) {
       clearTimeout(manualScrollTimeout);
       manualScrollTimeout = null;
     }
-    
+
+    if (videoEndObserver) {
+      videoEndObserver.disconnect();
+      videoEndObserver = null;
+    }
+
+    if (currentVideo) {
+      currentVideo.removeEventListener('ended', onVideoEnded);
+      currentVideo.removeEventListener('timeupdate', onTimeUpdate);
+      currentVideo.removeEventListener('pause', onPause);
+      currentVideo = null;
+    }
+
+    lastScrollTime = 0;
+    lastCurrentTime = 0;
+    lastDuration = 0;
+
     console.log('YouTube auto-scroll stopped');
   }
 
