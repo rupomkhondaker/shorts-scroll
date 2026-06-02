@@ -13,47 +13,109 @@
     scrollInterval: 10
   };
 
+  let scrolledThisVideo = false;
+
+  // Dispatch keyboard event on multiple targets for shadow DOM compatibility
+  function dispatchArrowDown() {
+    const options = {
+      key: 'ArrowDown',
+      code: 'ArrowDown',
+      keyCode: 40,
+      which: 40,
+      bubbles: true,
+      composed: true,
+      cancelable: true
+    };
+    const targets = [
+      document.activeElement,
+      document.querySelector('ytd-shorts'),
+      document.querySelector('#movie_player'),
+      document.querySelector('video'),
+      document.body,
+      document,
+      window
+    ].filter(Boolean);
+    targets.forEach(target => target.dispatchEvent(new KeyboardEvent('keydown', options)));
+  }
+
+  // Click the Shorts next button if it exists
+  function clickShortsNextButton() {
+    const selectors = [
+      'ytd-shorts button[aria-label*="Next"]',
+      'ytd-shorts [aria-label*="next"]',
+      'ytd-shorts .navigation-button',
+      'ytd-shorts #navigation-button-down',
+      '[is-shorts] button[aria-label*="Next"]'
+    ];
+    for (const sel of selectors) {
+      const btn = document.querySelector(sel);
+      if (btn) {
+        console.log('Shorts Scroll: clicking next button', sel);
+        btn.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Function to scroll to the next video
   function scrollToNextVideo() {
+    if (scrolledThisVideo) {
+      console.log('Already scrolled for this video, skipping');
+      return;
+    }
+
     const now = Date.now();
     if (now - lastScrollTime < SCROLL_COOLDOWN) {
       console.log('Scroll cooldown active, skipping');
       return;
     }
+
+    scrolledThisVideo = true;
     lastScrollTime = now;
     console.log('Scrolling to next YouTube video');
-    
-    // Check if we're on YouTube Shorts
+
     if (window.location.pathname.includes('/shorts')) {
-      // For YouTube Shorts, we need to simulate a keyboard down arrow press
-      const keyEvent = new KeyboardEvent('keydown', {
-        key: 'ArrowDown',
-        code: 'ArrowDown',
-        keyCode: 40,
-        which: 40,
-        bubbles: true
-      });
-      document.dispatchEvent(keyEvent);
+      // Try next button first, then keyboard fallback
+      if (!clickShortsNextButton()) {
+        console.log('Shorts Scroll: next button not found, using ArrowDown keyboard event');
+        dispatchArrowDown();
+      }
     } else {
-      // For regular YouTube videos, find the next video in recommendations
+      // Try autoplay / up next button first
+      const upNextSelectors = [
+        '.ytp-autonav-toggle-button[aria-checked="true"]',
+        'ytd-compact-autoplay-renderer a#thumbnail',
+        'ytd-compact-video-renderer a#thumbnail',
+        'ytd-video-renderer a#thumbnail',
+        'ytd-playlist-panel-renderer ytd-playlist-panel-video-renderer a#wc-endpoint'
+      ];
+      for (const sel of upNextSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          console.log('Shorts Scroll: clicking next video element', sel);
+          el.click();
+          return;
+        }
+      }
+
+      // Fallback: scroll recommendations into view
       const nextVideoElements = document.querySelectorAll('ytd-compact-video-renderer, ytd-video-renderer');
       if (nextVideoElements.length > 0) {
-        // Find the first visible recommendation that's not the current video
         for (let i = 0; i < nextVideoElements.length; i++) {
           const videoElement = nextVideoElements[i];
           if (isElementInViewport(videoElement)) {
-            // Click on the video thumbnail
             const thumbnailElement = videoElement.querySelector('a#thumbnail');
             if (thumbnailElement) {
+              console.log('Shorts Scroll: clicking visible recommendation thumbnail');
               thumbnailElement.click();
               return;
             }
           }
         }
-        
-        // If no visible recommendation found, scroll down to see more
         window.scrollBy(0, 500);
       }
+      console.log('Shorts Scroll: no next video element found for regular YouTube');
     }
   }
 
@@ -80,7 +142,7 @@
   let lastCurrentTime = 0;
   let lastDuration = 0;
 
-  function onVideoEnded(event) {
+  function onVideoEnded() {
     console.log('YouTube native video ended event fired');
     scrollToNextVideo();
   }
@@ -90,22 +152,34 @@
     const duration = video.duration;
     const currentTime = video.currentTime;
 
-    // Detect near-end via timeupdate (fires much more often than polling)
-    if (currentTime > 0 && typeof duration === 'number' && !isNaN(duration) && duration > 0 && duration !== Infinity) {
+    // Detect video replacement: was near end, now currentTime dropped significantly
+    // This means a new video loaded (YouTube Shorts often reuses the same element)
+    if (
+      lastCurrentTime > 0 &&
+      lastDuration > 0 &&
+      lastCurrentTime >= lastDuration - 2 &&
+      currentTime < lastCurrentTime - 2
+    ) {
+      console.log('YouTube video swap detected via currentTime reset');
+      scrolledThisVideo = false;
+      lastCurrentTime = currentTime;
+      lastDuration = duration;
+      return;
+    }
+
+    // Detect near-end via timeupdate
+    if (
+      currentTime > 0 &&
+      typeof duration === 'number' &&
+      !isNaN(duration) &&
+      duration > 0 &&
+      duration !== Infinity
+    ) {
       if (currentTime >= duration - 1) {
         console.log('YouTube video near end detected via timeupdate');
         scrollToNextVideo();
         return;
       }
-    }
-
-    // Detect video replacement: was near end, now currentTime dropped significantly
-    if (lastCurrentTime > 0 && lastDuration > 0 &&
-        lastCurrentTime >= lastDuration - 2 &&
-        currentTime < lastCurrentTime - 2) {
-      console.log('YouTube video ended detected via currentTime reset');
-      scrollToNextVideo();
-      return;
     }
 
     lastCurrentTime = currentTime;
@@ -118,8 +192,14 @@
     const currentTime = video.currentTime;
 
     // YouTube often pauses at the end instead of firing ended
-    if (currentTime > 0 && typeof duration === 'number' && !isNaN(duration) && duration > 0 && duration !== Infinity) {
-      if (currentTime >= duration - 2) {
+    if (
+      currentTime > 0 &&
+      typeof duration === 'number' &&
+      !isNaN(duration) &&
+      duration > 0 &&
+      duration !== Infinity
+    ) {
+      if (currentTime >= duration - 3) {
         console.log('YouTube video paused near end');
         scrollToNextVideo();
       }
@@ -128,7 +208,10 @@
 
   function attachVideoEndListeners() {
     const video = getMainVideoElement();
-    if (!video || video === currentVideo) return;
+
+    // Re-attach if video is new OR if currentVideo has been detached from the DOM
+    if (!video) return;
+    if (video === currentVideo && currentVideo.isConnected) return;
 
     // Detach from previous video
     if (currentVideo) {
@@ -138,6 +221,7 @@
     }
 
     currentVideo = video;
+    scrolledThisVideo = false;
     lastCurrentTime = 0;
     lastDuration = video.duration || 0;
 
@@ -158,39 +242,41 @@
       videoEndObserver = null;
     }
 
-    // Attach listeners to current video and watch for DOM changes
     attachVideoEndListeners();
+
+    // MutationObserver as a backup for DOM changes
     videoEndObserver = new MutationObserver(attachVideoEndListeners);
     videoEndObserver.observe(document.body, { childList: true, subtree: true });
 
-    // Fast fallback polling to catch anything missed by events
+    // Lightweight polling — catch video swaps missed by MutationObserver + paused+near-end fallback
     videoEndDetectionInterval = setInterval(() => {
       if (!settings.detectVideoEnd) return;
 
       const video = getMainVideoElement();
       if (!video) return;
 
-      // Re-attach if video element changed (backup in case MutationObserver misses it)
-      if (video !== currentVideo) {
+      // Re-attach if video element swapped or detached
+      if (video !== currentVideo || !currentVideo.isConnected) {
         attachVideoEndListeners();
-      }
-
-      const duration = video.duration;
-      const currentTime = video.currentTime;
-
-      if (video.ended) {
-        console.log('YouTube video ended (property, polled)');
-        scrollToNextVideo();
         return;
       }
 
-      if (currentTime > 0 && typeof duration === 'number' && !isNaN(duration) && duration > 0 && duration !== Infinity) {
-        if (currentTime >= duration - 0.5) {
-          console.log('YouTube video near end detected via fast polling');
-          scrollToNextVideo();
-        }
+      // Fallback: video is paused very near the end (YouTube end screen)
+      const duration = video.duration;
+      const currentTime = video.currentTime;
+      if (
+        video.paused &&
+        currentTime > 0 &&
+        typeof duration === 'number' &&
+        !isNaN(duration) &&
+        duration > 0 &&
+        duration !== Infinity &&
+        currentTime >= duration - 3
+      ) {
+        console.log('YouTube video paused near end detected via polling');
+        scrollToNextVideo();
       }
-    }, 200);
+    }, 1000);
   }
 
   // Function to set up manual scroll after X seconds
@@ -200,12 +286,10 @@
       manualScrollTimeout = null;
     }
 
-    // Only set up if scrollAfterSeconds is greater than 0
     if (settings.scrollAfterSeconds > 0) {
       console.log(`Setting up manual scroll after ${settings.scrollAfterSeconds} seconds`);
       manualScrollTimeout = setTimeout(() => {
         scrollToNextVideo();
-        // Reset the timer for the next video
         setupManualScrollTimer();
       }, settings.scrollAfterSeconds * 1000);
     }
@@ -213,45 +297,34 @@
 
   // Start auto-scrolling with all options
   function startAutoScroll(options) {
-    stopAutoScroll(); // Clear any existing timers
-    
-    // Update settings with provided options or defaults
+    stopAutoScroll();
+
     settings.detectVideoEnd = options.detectVideoEnd !== undefined ? options.detectVideoEnd : settings.detectVideoEnd;
     settings.scrollAfterSeconds = options.scrollAfterSeconds || settings.scrollAfterSeconds;
-    
-    // Only update interval if it's provided and video end detection is disabled
+
     if (!settings.detectVideoEnd && options.interval !== undefined) {
       settings.scrollInterval = options.interval;
     }
-    
-    console.log(`YouTube auto-scroll started with settings:`, settings);
-    
-    // Determine which scrolling method to use (priority: video end detection > manual timer > interval)
+
+    console.log('YouTube auto-scroll started with settings:', settings);
+
     let activeScrollMethod = 'none';
-    
-    // Set up video end detection if enabled (highest priority)
+
     if (settings.detectVideoEnd) {
       setupVideoEndDetection();
       activeScrollMethod = 'video-end';
       console.log('YouTube video end detection enabled');
-    }
-    // Set up manual scroll timer if specified and video end detection is not enabled
-    else if (settings.scrollAfterSeconds > 0) {
+    } else if (settings.scrollAfterSeconds > 0) {
       setupManualScrollTimer();
       activeScrollMethod = 'manual-timer';
       console.log(`YouTube manual scroll timer set to ${settings.scrollAfterSeconds} seconds`);
-    }
-    // Only use interval-based scrolling as last resort
-    else {
-      // Convert seconds to milliseconds
+    } else {
       const intervalMs = settings.scrollInterval * 1000;
-      
-      // Set new interval
       autoScrollInterval = setInterval(scrollToNextVideo, intervalMs);
       activeScrollMethod = 'interval';
       console.log(`YouTube interval-based auto-scroll started: ${settings.scrollInterval} seconds`);
     }
-    
+
     console.log(`YouTube active scroll method: ${activeScrollMethod}`);
   }
 
@@ -284,6 +357,7 @@
       currentVideo = null;
     }
 
+    scrolledThisVideo = false;
     lastScrollTime = 0;
     lastCurrentTime = 0;
     lastDuration = 0;
@@ -314,8 +388,8 @@
 
   // Check if auto-scroll should be enabled on page load
   chrome.storage.sync.get([
-    `${platform}-toggle`, 
-    `${platform}-interval`, 
+    `${platform}-toggle`,
+    `${platform}-interval`,
     `${platform}-detect-video-end`,
     `${platform}-scroll-after-seconds`
   ], function(data) {
